@@ -1,6 +1,6 @@
 const express = require('express');
 const path = require('path');
-const GameManager = require('./gamemanager.js'); // Use relative path
+const GameManager = require('./gameManager.js'); // Use relative path
 const cors = require('cors'); // Add for cross-origin support
 
 const app = express();
