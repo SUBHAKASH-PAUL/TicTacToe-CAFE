@@ -3,7 +3,7 @@
 
 *A cozy multiplayer Tic Tac Toe game with coffee shop aesthetics*
 
-![Game Preview](public/images/game-preview.png) *(add a screenshot later)*
+![Game Preview](public/images/GamePreview.png) 
 
 ## ✨ Features
 
