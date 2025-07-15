@@ -1,6 +1,7 @@
 class GameManager {
   constructor() {
     this.games = {};
+    this.cleanupInterval = setInterval(() => this.cleanupCompletedGames(), 60000); // Cleanup every minute
   }
 
   generateRandomCode(length) {
@@ -15,37 +16,50 @@ class GameManager {
   createGame(playerName) {
     const gameCode = this.generateRandomCode(6);
     this.games[gameCode] = {
-      players: [{ id: 1, name: playerName }],
+      players: [{ id: 1, name: playerName.trim() }],
       board: Array(9).fill(null),
       currentPlayer: 1,
       status: 'waiting',
-      winner: null
+      winner: null,
+      createdAt: Date.now(),
+      lastActivity: Date.now()
     };
     return gameCode;
   }
 
   joinGame(gameCode, playerName) {
-    if (!this.games[gameCode]) {
+    const game = this.games[gameCode];
+    if (!game) {
       return { success: false, message: 'Game not found' };
     }
     
-    if (this.games[gameCode].players.length >= 2) {
+    if (game.players.length >= 2) {
       return { success: false, message: 'Game is full' };
     }
 
-    this.games[gameCode].players.push({ id: 2, name: playerName });
-    this.games[gameCode].status = 'active';
+    if (game.status !== 'waiting') {
+      return { success: false, message: 'Game already started' };
+    }
+
+    game.players.push({ id: 2, name: playerName.trim() });
+    game.status = 'active';
+    game.lastActivity = Date.now();
     return { 
       success: true, 
       playerId: 2, 
-      opponentName: this.games[gameCode].players[0].name 
+      opponentName: game.players[0].name 
     };
   }
 
   makeMove(gameCode, playerId, position) {
     const game = this.games[gameCode];
     
-    if (!game || game.status !== 'active') {
+    // Validate move
+    if (!game) {
+      return { valid: false, message: 'Game not found' };
+    }
+    
+    if (game.status !== 'active') {
       return { valid: false, message: 'Game not active' };
     }
     
@@ -53,32 +67,37 @@ class GameManager {
       return { valid: false, message: 'Not your turn' };
     }
     
-    if (game.board[position]) {
-      return { valid: false, message: 'Position already taken' };
+    if (position < 0 || position > 8 || game.board[position]) {
+      return { valid: false, message: 'Invalid move' };
     }
 
+    // Execute move
     game.board[position] = playerId === 1 ? 'X' : 'O';
-    game.currentPlayer = playerId === 1 ? 2 : 1;
+    game.lastActivity = Date.now();
 
+    // Check game state
     const winner = this.checkWinner(game.board);
-    // In makeMove method:
-if (winner) {
-  game.status = 'completed';
-  game.winner = winner;
-  // Keep game in memory for at least 30 seconds after completion
-  setTimeout(() => {
-    if (this.games[gameCode]?.status === 'completed') {
-      delete this.games[gameCode];
+    const isDraw = !winner && this.checkDraw(game.board);
+
+    if (winner) {
+      game.status = 'completed';
+      game.winner = winner;
+      game.currentPlayer = null;
+    } else if (isDraw) {
+      game.status = 'completed';
+      game.winner = 'draw';
+      game.currentPlayer = null;
+    } else {
+      game.currentPlayer = playerId === 1 ? 2 : 1;
     }
-  }, 30000);
-}
 
     return { 
-      valid: true, 
-      board: game.board, 
+      valid: true,
+      board: [...game.board], // Return a copy
       currentPlayer: game.currentPlayer,
-      gameStatus: game.status,
-      winner: game.winner
+      status: game.status,
+      winner: game.winner,
+      isDraw: isDraw
     };
   }
 
@@ -89,8 +108,7 @@ if (winner) {
       [0, 4, 8], [2, 4, 6]             // diagonals
     ];
 
-    for (const pattern of winPatterns) {
-      const [a, b, c] = pattern;
+    for (const [a, b, c] of winPatterns) {
       if (board[a] && board[a] === board[b] && board[a] === board[c]) {
         return board[a] === 'X' ? 1 : 2;
       }
@@ -98,22 +116,57 @@ if (winner) {
     return null;
   }
 
-// Modify the getGameState method to include player perspective
-getGameState(gameCode, requestingPlayerId = null) {
-  const game = this.games[gameCode];
-  if (!game) return null;
-  
-  // Return a sanitized version of game state
-  return {
-    board: game.board,
-    currentPlayer: game.currentPlayer,
-    status: game.status,
-    players: game.players,
-    yourTurn: requestingPlayerId ? 
-      (game.currentPlayer === requestingPlayerId) : null,
-    winner: game.winner
-  };
-}
+  checkDraw(board) {
+    return board.every(cell => cell !== null);
+  }
+
+  getGameState(gameCode, requestingPlayerId = null) {
+    const game = this.games[gameCode];
+    if (!game) return null;
+
+    return {
+      board: [...game.board], // Return a copy
+      currentPlayer: game.currentPlayer,
+      status: game.status,
+      players: [...game.players], // Return a copy
+      yourTurn: requestingPlayerId ? (game.currentPlayer === requestingPlayerId) : null,
+      winner: game.winner,
+      isDraw: game.winner === 'draw',
+      lastActivity: game.lastActivity
+    };
+  }
+
+  cleanupCompletedGames() {
+    const now = Date.now();
+    const timeout = 30 * 60 * 1000; // 30 minutes
+
+    Object.keys(this.games).forEach(code => {
+      const game = this.games[code];
+      if (game.status === 'completed' && (now - game.lastActivity) > timeout) {
+        delete this.games[code];
+      }
+    });
+  }
+
+  quitGame(gameCode, playerId) {
+    const game = this.games[gameCode];
+    if (!game) return false;
+
+    game.lastActivity = Date.now();
+    
+    if (game.status === 'waiting') {
+      delete this.games[gameCode];
+      return true;
+    }
+
+    if (game.status === 'active') {
+      game.status = 'abandoned';
+      game.winner = playerId === 1 ? 2 : 1;
+      return true;
+    }
+
+    return false;
+  }
 }
 
 module.exports = GameManager;

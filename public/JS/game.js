@@ -16,12 +16,16 @@ export function renderGameScreen(gameCode, playerName, playerId, opponentName) {
         <p>${playerName} (You) vs ${opponentName}</p>
         <p id="turn-indicator">${playerId === 1 ? 'Your turn!' : 'Waiting for opponent...'}</p>
         <div id="connection-status" style="margin-top: 10px;">
-          <span class="connection-dot" style="height: 10px; width: 10px; background-color: #A7C4BC; border-radius: 50%; display: inline-block;"></span>
+          <span class="connection-dot"></span>
           <span>Connected</span>
         </div>
       </div>
       <div class="game-board" id="game-board">
-        ${Array(9).fill().map((_, i) => `<div class="cell" data-index="${i}"></div>`).join('')}
+        ${Array(9).fill().map((_, i) => `
+          <div class="cell" data-index="${i}">
+            <div class="marker"></div>
+          </div>
+        `).join('')}
       </div>
       <button id="quit-game-btn" class="btn">Quit Game</button>
     </div>
@@ -36,121 +40,106 @@ function setupGame(gameCode, playerId, playerName, opponentName) {
   let gameState = null;
   let isUpdating = false;
   let gameUpdateInterval;
-  const connectionStatus = document.querySelector('#connection-status span:last-child');
-  const connectionDot = document.querySelector('.connection-dot');
 
-  // Cleanup function
-  const cleanup = () => {
-    clearInterval(gameUpdateInterval);
-    const quitBtn = document.getElementById('quit-game-btn');
-    if (quitBtn) {
-      quitBtn.removeEventListener('click', handleQuit);
-    }
-  };
-
-  // Quit handler
-  const handleQuit = () => {
-    cleanup();
-    
-    // Notify server (optional)
-    fetch(`/api/game/quit/${gameCode}?playerId=${playerId}`, {
-      method: 'POST'
-    }).catch(console.error);
-    
-    // Clear the game screen completely
-    const gameScreen = document.getElementById('game-screen');
-    if (gameScreen) gameScreen.remove();
-    
-    // Render fresh welcome screen
-    renderWelcomeScreen();
-  };
-
-  // Set up quit button
-  document.getElementById('quit-game-btn').addEventListener('click', handleQuit);
-
-  // Enhanced polling function
+  // Enhanced polling function with better error handling
   const pollGameState = async () => {
     if (isUpdating) return;
     isUpdating = true;
 
     try {
       const response = await fetch(`/api/game/state/${gameCode}?playerId=${playerId}`);
-      if (!response.ok) throw new Error('Network error');
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       
       const data = await response.json();
-      if (!data) throw new Error('Invalid game state');
+      if (!data) throw new Error('Invalid game state received');
 
+      // Only update if state changed significantly
       if (!gameState || 
           data.status !== gameState.status || 
-          JSON.stringify(data.board) !== JSON.stringify(gameState.board)) {
+          JSON.stringify(data.board) !== JSON.stringify(gameState.board) ){
         updateBoard(data.board);
         updateGameStatus(data);
       }
 
       gameState = data;
-      connectionStatus.textContent = 'Connected';
-      connectionDot.style.backgroundColor = '#A7C4BC';
+      updateConnectionStatus(true);
     } catch (error) {
       console.error('Polling error:', error);
-      if (!gameState || gameState.status !== 'completed') {
-        connectionStatus.textContent = 'Reconnecting...';
-        connectionDot.style.backgroundColor = '#FF6B6B';
-      }
+      updateConnectionStatus(false);
     } finally {
       isUpdating = false;
     }
   };
 
-  // Start polling
-  gameUpdateInterval = setInterval(pollGameState, 500);
-  pollGameState();
+  // Connection status updater
+  const updateConnectionStatus = (isConnected) => {
+    const statusElement = document.querySelector('#connection-status span:last-child');
+    const dotElement = document.querySelector('.connection-dot');
+    
+    if (isConnected) {
+      statusElement.textContent = 'Connected';
+      dotElement.style.backgroundColor = '#A7C4BC';
+    } else if (!gameState || gameState.status !== 'completed') {
+      statusElement.textContent = 'Reconnecting...';
+      dotElement.style.backgroundColor = '#FF6B6B';
+    }
+  };
 
-  // Handle cell clicks
-  cells.forEach(cell => {
-    cell.addEventListener('click', async () => {
-      if (!gameState || gameState.status !== 'active' || gameState.currentPlayer !== playerId) {
-        return;
+  // Cell click handler with better validation
+  const handleCellClick = async (position) => {
+    if (!gameState || 
+        gameState.status !== 'active' || 
+        gameState.currentPlayer !== playerId || 
+        gameState.board[position] !== null) {
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/game/move', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          gameCode, 
+          playerId, 
+          position 
+        })
+      });
+
+      const result = await response.json();
+      if (result.valid) {
+        await pollGameState(); // Immediate update after move
+      } else {
+        console.warn('Invalid move:', result.message);
       }
+    } catch (error) {
+      console.error('Move error:', error);
+      updateConnectionStatus(false);
+    }
+  };
 
-      const position = parseInt(cell.dataset.index);
-      if (gameState.board[position]) return;
-
-      try {
-        const response = await fetch('/api/game/move', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ gameCode, playerId, position })
-        });
-
-        const result = await response.json();
-        if (result.valid) {
-          await pollGameState();
-        }
-      } catch (error) {
-        console.error('Move error:', error);
-      }
-    });
-  });
-
-  // Update board visuals
-  function updateBoard(board) {
+  // Board visual updater
+  const updateBoard = (board) => {
     cells.forEach((cell, index) => {
+      const marker = cell.querySelector('.marker');
       cell.className = 'cell';
-      cell.style.pointerEvents = gameState?.status === 'completed' ? 'none' : 'auto';
-      if (board[index] === 'X') {
-        cell.classList.add('x');
-      } else if (board[index] === 'O') {
-        cell.classList.add('o');
-      }
-    });
-  }
-
-  // Update game status text
-  function updateGameStatus(data) {
-    if (data.status === 'completed') {
-      cleanup();
-      let resultMessage;
+      marker.className = 'marker';
       
+      if (board[index] === 'X') {
+        marker.classList.add('x');
+      } else if (board[index] === 'O') {
+        marker.classList.add('o');
+      }
+      
+      cell.style.pointerEvents = gameState?.status === 'completed' ? 'none' : 'auto';
+    });
+  };
+
+  // Game status updater
+  const updateGameStatus = (data) => {
+    if (data.status === 'completed') {
+      clearInterval(gameUpdateInterval);
+      
+      let resultMessage;
       if (data.winner === 'draw') {
         resultMessage = 'Game ended in a draw!';
       } else {
@@ -166,8 +155,6 @@ function setupGame(gameCode, playerId, playerName, opponentName) {
       const quitBtn = document.getElementById('quit-game-btn');
       if (quitBtn) {
         quitBtn.textContent = 'Return to Menu';
-        quitBtn.removeEventListener('click', handleQuit);
-        quitBtn.addEventListener('click', handleQuit);
       }
     } else {
       turnIndicator.textContent = data.currentPlayer === playerId 
@@ -177,13 +164,45 @@ function setupGame(gameCode, playerId, playerName, opponentName) {
         ? '#8B4513' 
         : '#A7C4BC';
     }
-  }
+  };
+
+  // Cleanup function
+  const cleanup = () => {
+    clearInterval(gameUpdateInterval);
+    cells.forEach(cell => {
+      cell.removeEventListener('click', cellClickHandler);
+    });
+  };
+
+  // Set up cell click handlers
+  const cellClickHandler = (event) => {
+    const position = parseInt(event.currentTarget.dataset.index);
+    handleCellClick(position);
+  };
+
+  cells.forEach(cell => {
+    cell.addEventListener('click', cellClickHandler);
+  });
+
+  // Set up quit button
+  document.getElementById('quit-game-btn').addEventListener('click', () => {
+    cleanup();
+    fetch(`/api/game/quit/${gameCode}?playerId=${playerId}`, {
+      method: 'POST'
+    }).catch(console.error);
+    renderWelcomeScreen();
+  });
+
+  // Start polling
+  gameUpdateInterval = setInterval(pollGameState, 500);
+  pollGameState(); // Initial load
 }
 
 // Image preloader
 function preloadImages() {
   ['coffee-x.png', 'coffee-o.png'].forEach(img => {
-    new Image().src = `../images/${img}`;
+    const image = new Image();
+    image.src = `../images/${img}`;
   });
 }
 preloadImages();
